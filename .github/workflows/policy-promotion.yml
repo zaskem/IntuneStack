@@ -1,44 +1,22 @@
 # ⚠️ SECURITY WARNING:
 # Integration tests connect to a real Intune tenant. Do not run integration tests
 # on public repositories as workflow logs are public and may contain sensitive data.
-#
-# Safe for public repos:
-# - Code quality checks (PSScriptAnalyzer)
-# - Unit tests (Pester)
-# - Mock tests
-#
-# Run integration tests only:
-# - On private forks with proper environment protection
-# - Locally with .\src\PolicyPromotion.ps1
 
-name: 🔥 IntuneStack - Policy Promotion
+name: Policy Promotion
 
 on:
-    # Automatic triggers
-    push:
-        branches: [main, development]
-        paths:
-            - "src/PolicyPromotion.ps1"
-            - "tests/PolicyPromotion.Tests.ps1"
-            - ".github/workflows/policy-promotion.yml"
-
     pull_request:
-        branches: [main, development]
-        paths:
-            - "src/PolicyPromotion.ps1"
-            - "tests/**"
-            - ".github/workflows/policy-promotion.yml"
+        branches: [ main ]
+        types: [ opened, synchronize, reopened ]
 
-    # Manual dispatch with options
     workflow_dispatch:
         inputs:
             policy_id:
-                description: "Policy ID (GUID) to test"
+                description: "Policy ID (GUID)"
                 required: true
                 type: string
-
             current_stage:
-                description: "Current deployment stage"
+                description: "Current stage"
                 required: true
                 default: "dev"
                 type: choice
@@ -46,435 +24,153 @@ on:
                     - dev
                     - test
                     - prod
-
             compliance_threshold:
-                description: "Success rate threshold (%)"
+                description: "Compliance threshold (%)"
                 required: false
                 default: "80"
                 type: string
-
             auto_promote:
-                description: "Enable auto-promotion"
+                description: "Auto promote"
                 required: false
                 default: false
                 type: boolean
 
-            output_level:
-                description: "Output verbosity"
-                required: false
-                default: "Normal"
-                type: choice
-                options:
-                    - Minimal
-                    - Normal
-                    - Detailed
+concurrency:
+    group: ${{ github.repository }}-policy-promotion-${{ github.ref }}
+    cancel-in-progress: false
 
-            run_tests_only:
-                description: "Run Pester tests only (skip live testing)"
-                required: false
-                default: false
-                type: boolean
-
-# Scheduled testing (optional - runs daily at 6 AM UTC)
-#  schedule:
-#  - cron: '0 6 * * 1-5'  # Weekdays only
-
-env:
-    # PowerShell preferences
-    POWERSHELL_TELEMETRY_OPTOUT: 1
-    REPORTS_PATH: "./output/reports"
-    ARTIFACTS_PATH: "./output/artifacts"
-
-# Required permissions for OIDC and Graph API
 permissions:
     id-token: write
     contents: read
-    pull-requests: write
+    pull-requests: read
     actions: read
 
+env:
+    POWERSHELL_TELEMETRY_OPTOUT: 1
+
 jobs:
-    # Job 1: Code Quality and Static Analysis
-    code-quality:
-        name: 🔍 Code Quality & Static Analysis
+    parse-pr:
+        name: Parse PR
         runs-on: ubuntu-latest
+        if: github.event_name == 'pull_request'
+        outputs:
+            policy_id: ${{ steps.parse.outputs.policy_id }}
+            current_stage: ${{ steps.parse.outputs.current_stage }}
+            compliance_threshold: ${{ steps.parse.outputs.compliance_threshold }}
+            auto_promote: ${{ steps.parse.outputs.auto_promote }}
 
         steps:
-            - name: 📥 Checkout Repository
-              uses: actions/checkout@v4
-
-            - name: 📦 Install Required Modules
-              shell: pwsh
-              run: |
-                  # Suppress progress bars for clean output
-                  $ProgressPreference = 'SilentlyContinue'
-
-                  # Install PSScriptAnalyzer if not available
-                  if (-not (Get-Module -ListAvailable -Name PSScriptAnalyzer)) {
-                    Write-Host "Installing PSScriptAnalyzer..."
-                    Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser
-                  }
-
-                  $pesterModule = Get-Module -ListAvailable -Name Pester | Where-Object { $_.Version -ge [Version]'5.0' }
-                  if (-not $pesterModule) {
-                    Install-Module -Name Pester -Force -Scope CurrentUser -MinimumVersion 5.0 -AllowClobber
-                  }
-
-                  Write-Host "✓Modules ready" -ForegroundColor Green
-
-            - name: 🔍 Run PSScriptAnalyzer
-              shell: pwsh
-              run: |
-                  New-Item -Path "output" -ItemType Directory -Force | Out-Null
-
-                   $results = Invoke-ScriptAnalyzer -Path "./src/PolicyPromotion.ps1" -Severity Error,Warning -ExcludeRule @(
-                     'PSAvoidUsingWriteHost',
-                     'PSAvoidOverwritingBuiltInCmdlets',
-                     'PSAvoidUsingConvertToSecureStringWithPlainText'
-                   ) -Recurse
-
-                   if ($results) {
-                     $results | Format-Table RuleName, Severity, Line, Message -AutoSize
-                     $results | Export-Csv -Path "./output/scriptanalyzer-results.csv" -NoTypeInformation
-
-                     $errors = $results | Where-Object Severity -eq 'Error'
-                     if ($errors) {
-                       Write-Host "✗ Found $($errors.Count) error(s)" -ForegroundColor Red
-                       exit 1
-                     }
-
-                     $warnings = $results | Where-Object Severity -eq 'Warning'
-                     Write-Host "⚠ Found $($warnings.Count) warning(s)" -ForegroundColor Yellow
-                   } else {
-                     Write-Host "✓ No issues found"
-                   }
-
-            - name: 📊 Upload Code Quality Results
-              # Only upload if this is not a PR from a fork
-              if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-              uses: actions/upload-artifact@v4
+            - name: Parse PR body
+              id: parse
+              uses: actions/github-script@v7
               with:
-                  name: code-quality-results
-                  path: |
-                      output/scriptanalyzer-results.csv
-                  retention-days: 7
-                  if-no-files-found: ignore
+                  script: |
+                      const body = context.payload.pull_request.body || '';
 
-    # Job 2: Unit Testing with Pester
-    unit-tests:
-        name: 🧪 Unit Tests (Pester)
+                      const extract = (label) => {
+                          const regex = new RegExp(`\\*\\*${label}[^*]*\\*\\*[^\\S\\r\\n]*([^\\r\\n]+)`, 'i');
+                          const match = body.match(regex);
+                          return match ? match[1].trim() : '';
+                      };
+
+                      const policyId   = extract('Policy ID \\(GUID\\)');
+                      const stage      = extract('Current Stage');
+                      const threshold  = extract('Compliance Threshold \\(%\\)') || '80';
+                      const autoPromote = extract('Auto Promote').toLowerCase() === 'yes';
+
+                      if (!policyId) {
+                          core.setFailed('Policy ID is required in the PR body.');
+                          return;
+                      }
+
+                      core.setOutput('policy_id', policyId);
+                      core.setOutput('current_stage', stage || 'dev');
+                      core.setOutput('compliance_threshold', threshold);
+                      core.setOutput('auto_promote', autoPromote.toString());
+
+                      core.info(`Policy ID: ${policyId}`);
+                      core.info(`Stage: ${stage}`);
+                      core.info(`Threshold: ${threshold}%`);
+                      core.info(`Auto Promote: ${autoPromote}`);
+
+    promote:
+        name: Promote
         runs-on: ubuntu-latest
-        needs: code-quality
-
-        steps:
-            - name: 📥 Checkout Repository
-              uses: actions/checkout@v4
-
-            - name: 📦 Install Testing Modules
-              shell: pwsh
-              run: |
-                  $ProgressPreference = 'SilentlyContinue'
-
-                  $pesterModule = Get-Module -ListAvailable -Name Pester | Where-Object { $_.Version -ge [Version]'5.0' }
-                  if (-not $pesterModule) {
-                     Write-Host "Installing Pester..."
-                     Install-Module -Name Pester -Force -Scope CurrentUser -MinimumVersion 5.0 -AllowClobber
-                   }
-
-                  if (-not (Get-Module -ListAvailable -Name Microsoft.Graph.Authentication)) {
-                     Write-Host "Installing Microsoft.Graph.Authentication..."
-                     Install-Module -Name Microsoft.Graph.Authentication -Force -Scope CurrentUser
-                   }
-
-                   Write-Host "✓ Modules ready"
-
-            - name: 🧪 Run Pester Tests
-              shell: pwsh
-              run: |
-                  New-Item -Path "output/test-results" -ItemType Directory -Force | Out-Null
-
-                  # Configure Pester
-                  $pesterConfig = New-PesterConfiguration
-                  $pesterConfig.Run.Path = "./tests/PolicyPromotion.Tests.ps1"
-                  $pesterConfig.TestResult.Enabled = $true
-                  $pesterConfig.TestResult.OutputPath = "./output/test-results/PolicyPromotion-TestResults.xml"
-                  $pesterConfig.TestResult.OutputFormat = "NUnitXml"
-                  $pesterConfig.CodeCoverage.Enabled = $true
-                  $pesterConfig.CodeCoverage.Path = "./src/PolicyPromotion.ps1"
-                  $pesterConfig.CodeCoverage.OutputPath = "./output/test-results/PolicyPromotion-Coverage.xml"
-                  $pesterConfig.Output.Verbosity = "Detailed"
-
-                  # Run tests
-                  $testResults = Invoke-Pester -Configuration $pesterConfig
-
-                  # Output summary
-                  Write-Host "`n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                  Write-Host "Total:   $($testResults.TotalCount)"
-                  Write-Host "Passed:  $($testResults.PassedCount)" -ForegroundColor Green
-                  Write-Host "Failed:  $($testResults.FailedCount)" -ForegroundColor $(if($testResults.FailedCount -gt 0){'Red'}else{'Green'})
-                  Write-Host "Skipped: $($testResults.SkippedCount)" -ForegroundColor Yellow
-                  Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-                  if ($testResults.FailedCount -gt 0) {
-                    exit 1
-                  }
-
-            - name: 📊 Upload Test Results
-              # Only upload if this is not a PR from a fork
-              if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-              uses: actions/upload-artifact@v4
-              with:
-                  name: test-results
-                  path: |
-                      output/test-results/
-                  retention-days: 7
-
-    # Job 3: Integration Testing
-    integration-tests:
-        name: 🔗 Integration Tests (Graph API)
-        runs-on: ubuntu-latest
-        needs: [code-quality, unit-tests]
-        # IMPORTANT: Only runs on manual workflow_dispatch to prevent accidental exposure
-        if: github.event_name == 'workflow_dispatch' && !inputs.run_tests_only
+        needs: [ parse-pr ]
+        if: |
+            always() &&
+            (github.event_name == 'workflow_dispatch' ||
+            (github.event_name == 'pull_request' && needs.parse-pr.result == 'success'))
 
         environment:
-            name: development
-            url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            name: ${{ github.event_name == 'workflow_dispatch' && inputs.current_stage ||
+                needs.parse-pr.outputs.current_stage }}
+            url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{
+                github.run_id }}
 
         steps:
-            - name: ⚠️ Security Notice
-              shell: pwsh
-              run: |
-                  Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Yellow
-                  Write-Host "⚠️  SECURITY NOTICE" -ForegroundColor Yellow
-                  Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Yellow
-                  Write-Host ""
-                  Write-Host "This workflow connects to a real Intune tenant." -ForegroundColor White
-                  Write-Host "Workflow logs may contain sensitive information." -ForegroundColor White
-                  Write-Host ""
-                  Write-Host "For public repositories, consider:" -ForegroundColor Cyan
-                  Write-Host "  • Running integration tests locally only" -ForegroundColor Gray
-                  Write-Host "  • Using a test tenant with no production data" -ForegroundColor Gray
-                  Write-Host "  • Keeping your fork private if running here" -ForegroundColor Gray
-                  Write-Host ""
-                  Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Yellow
+            - uses: actions/checkout@v4
 
-            - name: 📥 Checkout Repository
-              uses: actions/checkout@v4
-
-            - name: Request OIDC token from GitHub
+            - name: Request OIDC token
               id: oidc
               shell: bash
               run: |
                   OIDC_TOKEN="$(curl -s -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
                     "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" | jq -r .value)"
                   echo "oidc_token=$OIDC_TOKEN" >> $GITHUB_OUTPUT
-                  # Mask the token immediately
                   echo "::add-mask::$OIDC_TOKEN"
 
-            - name: 📦 Install Graph Modules
+            - name: Install modules
               shell: pwsh
               run: |
                   $ProgressPreference = 'SilentlyContinue'
-
-                  # Install Microsoft Graph Authentication if not available
                   if (-not (Get-Module -ListAvailable -Name Microsoft.Graph.Authentication)) {
-                    Write-Host "Installing Microsoft.Graph.Authentication..."
-                    Install-Module -Name Microsoft.Graph.Authentication -Force -Scope CurrentUser
+                      Install-Module -Name Microsoft.Graph.Authentication -Force -Scope CurrentUser
                   }
 
-                  Write-Host "✓ Modules ready"
-
-            - name: 🧪 Execute Policy Promotion Script
+            - name: Run promotion analysis
               shell: pwsh
               env:
-                  POLICY_ID: ${{ inputs.policy_id }}
-                  CURRENT_STAGE: ${{ inputs.current_stage }}
-                  COMPLIANCE_THRESHOLD: ${{ inputs.compliance_threshold || '80' }}
-                  AUTO_PROMOTE: ${{ inputs.auto_promote || 'false' }}
-                  OUTPUT_LEVEL: ${{ inputs.output_level || 'Normal' }}
-                  # Authentication environment variables
                   AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
                   AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
                   OIDC_TOKEN: ${{ steps.oidc.outputs.oidc_token }}
-                  # Optional: Pass custom group names only if defined as repository variables
                   INTUNESTACK_DEV_GROUP: ${{ vars.INTUNESTACK_DEV_GROUP }}
                   INTUNESTACK_TEST_GROUP: ${{ vars.INTUNESTACK_TEST_GROUP }}
                   INTUNESTACK_PROD_GROUP: ${{ vars.INTUNESTACK_PROD_GROUP }}
               run: |
-                  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                  # Mask sensitive values in logs
-                  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                  if ($env:AZURE_TENANT_ID) {
-                      echo "::add-mask::$env:AZURE_TENANT_ID"
-                      Write-Host "✓ Tenant ID masked in logs" -ForegroundColor Green
-                  }
-                  if ($env:AZURE_CLIENT_ID) {
-                      echo "::add-mask::$env:AZURE_CLIENT_ID"
-                      Write-Host "✓ Client ID masked in logs" -ForegroundColor Green
-                  }
-                  if ($env:OIDC_TOKEN) {
-                      echo "::add-mask::$env:OIDC_TOKEN"
-                      Write-Host "✓ OIDC token masked in logs" -ForegroundColor Green
-                  }
+                  if ($env:AZURE_TENANT_ID) { Write-Output "::add-mask::$env:AZURE_TENANT_ID" }
+                  if ($env:AZURE_CLIENT_ID) { Write-Output "::add-mask::$env:AZURE_CLIENT_ID" }
+                  if ($env:OIDC_TOKEN)      { Write-Output "::add-mask::$env:OIDC_TOKEN" }
 
-                  # Mask the policy ID to prevent exposure
-                  if ($env:POLICY_ID) {
-                      echo "::add-mask::$env:POLICY_ID"
-                      Write-Host "✓ Policy ID masked in logs" -ForegroundColor Green
-                  }
+                  . ./Public/Write-Log.ps1
+                  Import-Module ./IntuneStack.psd1
 
-                  Write-Host ""
+                  $policyId  = if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') { '${{ inputs.policy_id }}' } else { '${{ needs.parse-pr.outputs.policy_id }}' }
+                  $stage     = if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') { '${{ inputs.current_stage }}' } else { '${{ needs.parse-pr.outputs.current_stage }}' }
+                  $threshold = if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') { [int]'${{ inputs.compliance_threshold }}' } else { [int]'${{ needs.parse-pr.outputs.compliance_threshold }}' }
+                  $auto      = if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') { '${{ inputs.auto_promote }}' -eq 'true' } else { '${{ needs.parse-pr.outputs.auto_promote }}' -eq 'true' }
 
-                  # Validate required inputs
-                  if (-not $env:POLICY_ID) {
-                     Write-Host "❌ Policy ID is required but not provided" -ForegroundColor Red
-                     exit 1
-                  }
+                  if ($policyId) { Write-Output "::add-mask::$policyId" }
 
-                  if (-not $env:CURRENT_STAGE) {
-                     Write-Host "❌ Current stage is required but not provided" -ForegroundColor Red
-                     exit 1
-                  }
-
-                  # Create output directories
-                  New-Item -Path "$env:REPORTS_PATH" -ItemType Directory -Force | Out-Null
-                  New-Item -Path "$env:ARTIFACTS_PATH" -ItemType Directory -Force | Out-Null
-
-                  # Build parameters
                   $params = @{
-                    PolicyId = $env:POLICY_ID
-                    ComplianceThreshold = [int]$env:COMPLIANCE_THRESHOLD
-                    CurrentStage = $env:CURRENT_STAGE
-                    OutputPath = $env:REPORTS_PATH
-                    OutputLevel = $env:OUTPUT_LEVEL
+                      PolicyId            = $policyId
+                      CurrentStage        = $stage
+                      ComplianceThreshold = $threshold
                   }
 
-                  if ($env:AUTO_PROMOTE -eq 'true') {
-                    $params.AutoPromote = $true
-                  }
+                  if ($auto) { $params.AutoPromote = $true }
 
-                  # Execute script
-                  try {
-                    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
-                    Write-Host "Starting Policy Promotion Analysis" -ForegroundColor Cyan
-                    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
-                    Write-Host ""
+                  $result = Start-PolicyPromotionAnalysis @params
+                  exit ([int](-not $result))
 
-                    & "./src/PolicyPromotion.ps1" @params
-
-                    $exitCode = $LASTEXITCODE
-                    Write-Host ""
-                    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
-                    if ($exitCode -eq 0) {
-                      Write-Host "✓ Analysis Complete: Ready for promotion" -ForegroundColor Green
-                    } else {
-                      Write-Host "⏳ Analysis Complete: Not ready for promotion (exit code: $exitCode)" -ForegroundColor Yellow
-                    }
-                    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
-                  }
-                  catch {
-                    Write-Host ""
-                    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Red
-                    Write-Host "✗ Error occurred during analysis" -ForegroundColor Red
-                    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Red
-                    # Don't print the full exception message as it might contain sensitive info
-                    Write-Host "Check the logs above for details" -ForegroundColor Yellow
-                    exit 1
-                  }
-
-            # Integration test results contain real Intune tenant information
-            # and should not be uploaded as artifacts on a public repository
-
-            - name: 📋 Integration Test Summary
+            - name: Summary
               if: always()
-              shell: pwsh
+              shell: bash
               run: |
-                  Write-Host ""
-                  Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
-                  Write-Host "📋 Integration Test Summary" -ForegroundColor Cyan
-                  Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
-                  Write-Host ""
-                  Write-Host "✅ Integration tests completed" -ForegroundColor Green
-                  Write-Host ""
-                  Write-Host "📄 Results available in workflow logs only" -ForegroundColor White
-                  Write-Host "🔒 No artifacts uploaded (protects sensitive data)" -ForegroundColor Yellow
-                  Write-Host ""
-                  Write-Host "ℹ️  For detailed results, review the logs above" -ForegroundColor Gray
-                  Write-Host ""
-                  Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+                  cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+                  # Policy Promotion
 
-            - name: 📝 Summary
-              if: always()
-              shell: pwsh
-              run: |
-                  $summary = @"
-                  # 🔥 IntuneStack Policy Promotion Results
-
-                  ## ⚠️ Security Notice
-                  This workflow connected to a real Intune tenant. Sensitive information has been masked in logs.
-
-                  ## Test Configuration
-                  - **Current Stage**: ${{ inputs.current_stage }}
-                  - **Compliance Threshold**: ${{ inputs.compliance_threshold || '80' }}%
-                  - **Auto Promote**: ${{ inputs.auto_promote || 'false' }}
-                  - **Output Level**: ${{ inputs.output_level || 'Normal' }}
-                  - **Workflow**: ${{ github.workflow }}
-                  - **Run ID**: ${{ github.run_id }}
-
-                  ## Results
-                  View details: [Actions run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
-                  "@
-
-                  $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding UTF8
-
-    # Job 4: Synthetic/Mock Testing (when no real environment available)
-    mock-tests:
-        name: 🎭 Mock/Synthetic Tests
-        runs-on: ubuntu-latest
-        needs: [code-quality, unit-tests]
-        if: github.event_name != 'workflow_dispatch' || inputs.run_tests_only
-
-        steps:
-            - name: 📥 Checkout Repository
-              uses: actions/checkout@v4
-
-            - name: Run Synthetic Tests
-              shell: pwsh
-              run: |
-                  Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
-                  Write-Host "🎭 Running Synthetic/Mock Tests" -ForegroundColor Cyan
-                  Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
-                  Write-Host ""
-                  Write-Host "These tests validate script logic without connecting" -ForegroundColor Gray
-                  Write-Host "to a real Intune tenant (safe for public repos)" -ForegroundColor Gray
-                  Write-Host ""
-
-                  # Create mock output directory
-                  New-Item -Path "$env:REPORTS_PATH" -ItemType Directory -Force | Out-Null
-
-                  # Test script syntax
-                  $testCases = @(
-                    @{ PolicyId = "00000000-0000-0000-0000-000000000001"; Stage = "dev"; Threshold = 80 }
-                    @{ PolicyId = "00000000-0000-0000-0000-000000000002"; Stage = "test"; Threshold = 85 }
-                    @{ PolicyId = "00000000-0000-0000-0000-000000000003"; Stage = "prod"; Threshold = 90 }
-                  )
-
-                  Write-Host "Testing promotion logic with synthetic data:" -ForegroundColor White
-                  foreach ($test in $testCases) {
-                    Write-Host "  ✓ Stage: $($test.Stage), Threshold: $($test.Threshold)%" -ForegroundColor Green
-                  }
-
-                  Write-Host ""
-                  Write-Host "✅ Synthetic tests passed" -ForegroundColor Green
-                  Write-Host ""
-                  Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
-
-            - name: 📊 Upload Results
-              # Only upload if this is not a PR from a fork
-              if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-              uses: actions/upload-artifact@v4
-              with:
-                  name: mock-test-results
-                  path: ${{ env.REPORTS_PATH }}/
-                  retention-days: 7
-                  if-no-files-found: ignore
+                  | Setting | Value |
+                  |---------|-------|
+                  | Run | [${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
+                  EOF

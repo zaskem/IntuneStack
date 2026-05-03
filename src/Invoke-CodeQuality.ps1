@@ -34,33 +34,12 @@ param(
 )
 
 #region Functions
-function Write-Log {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Message,
-
-        [Parameter(Mandatory = $false)]
-        [ValidateSet('Info', 'Warning', 'Error', 'Success')]
-        [string]$Level = 'Info'
-    )
-
-    $Color = switch ($Level) {
-        'Info' { 'White' }
-        'Warning' { 'Yellow' }
-        'Error' { 'Red' }
-        'Success' { 'Green' }
-    }
-
-    Write-Host $Message -ForegroundColor $Color
-}
-
 function Test-PowerShellModules {
     $RequiredModules = @('PSScriptAnalyzer')
 
     foreach ($Module in $RequiredModules) {
         if (-not (Get-Module -ListAvailable -Name $Module)) {
-            Write-Log "Installing required module: $Module" -Level Warning
+            Write-Log -Message "Installing required module: $Module" -Severity Warn
             Install-Module -Name $Module -Force -Scope CurrentUser
         }
     }
@@ -73,23 +52,23 @@ function Invoke-PSScriptAnalyzerCheck {
         [string]$Path
     )
 
-    Write-Log "🔍 Running PSScriptAnalyzer..." -Level Info
+    Write-Log -Message "Running PSScriptAnalyzer..." -Severity Info
 
     $PowerShellFiles = Get-ChildItem -Path $Path -Include "*.ps1", "*.psm1", "*.psd1" -Recurse |
         Where-Object { $_.FullName -notmatch '(node_modules|\.git|\.vscode|bin|obj)' }
 
     if (-not $PowerShellFiles) {
-        Write-Log "No PowerShell files found to analyze" -Level Warning
+        Write-Log -Message "No PowerShell files found to analyze" -Severity Warn
         return @()
     }
 
-    Write-Log "Found $($PowerShellFiles.Count) PowerShell files to analyze" -Level Info
+    Write-Log -Message "Found $($PowerShellFiles.Count) PowerShell files to analyze" -Severity Info
 
     $AllResults = @()
     $SettingsPath = Join-Path $Path "PSScriptAnalyzerSettings.psd1"
 
     foreach ($File in $PowerShellFiles) {
-        Write-Log "  Analyzing: $($File.Name)" -Level Info
+        Write-Log -Message "Analyzing: $($File.Name)" -Severity Info
 
         try {
             $Results = if (Test-Path $SettingsPath) {
@@ -102,17 +81,17 @@ function Invoke-PSScriptAnalyzerCheck {
                 $AllResults += $Results
 
                 foreach ($Result in $Results) {
-                    $Level = switch ($Result.Severity) {
+                    $severity = switch ($Result.Severity) {
                         'Error' { 'Error' }
-                        'Warning' { 'Warning' }
+                        'Warning' { 'Warn' }
                         'Information' { 'Info' }
                     }
 
-                    Write-Log "    [$($Result.Severity)] $($Result.RuleName): $($Result.Message) (Line: $($Result.Line))" -Level $Level
+                    Write-Log -Message "[$($Result.Severity)] $($Result.RuleName): $($Result.Message) (Line: $($Result.Line))" -Severity $severity
                 }
             }
         } catch {
-            Write-Log "    Error analyzing file: $($_.Exception.Message)" -Level Error
+            Write-Log -Message "Error analyzing file: $($File.Name)" -Severity Error
         }
     }
 
@@ -129,7 +108,7 @@ function Invoke-FormattingCheck {
         [switch]$Fix
     )
 
-    Write-Log "📐 Checking PowerShell formatting..." -Level Info
+    Write-Log -Message "Checking PowerShell formatting..." -Severity Info
 
     $PowerShellFiles = Get-ChildItem -Path $Path -Include "*.ps1", "*.psm1", "*.psd1" -Recurse |
         Where-Object { $_.FullName -notmatch '(node_modules|\.git|\.vscode|bin|obj)' }
@@ -138,46 +117,37 @@ function Invoke-FormattingCheck {
 
     foreach ($File in $PowerShellFiles) {
         $Content = Get-Content -Path $File.FullName -Raw
-
-        # Check for common formatting issues
         $Issues = @()
 
-        # Check for trailing whitespace
         if ($Content -match '\s+$') {
             $Issues += "Trailing whitespace found"
         }
 
-        # Check for mixed line endings
         if ($Content -match '\r\n' -and $Content -match '(?<!\r)\n') {
             $Issues += "Mixed line endings (CRLF and LF)"
         }
 
-        # Check for tabs instead of spaces
         if ($Content -match '\t') {
             $Issues += "Tabs found (should use spaces)"
         }
 
         if ($Issues) {
             $FormattingIssues += $Issues.Count
-            Write-Log "  $($File.Name):" -Level Warning
+            Write-Log -Message "$($File.Name) has formatting issues:" -Severity Warn
+
             foreach ($Issue in $Issues) {
-                Write-Log "    - $Issue" -Level Warning
+                Write-Log -Message "  - $Issue" -Severity Warn
             }
 
             if ($Fix) {
-                Write-Log "    Attempting to fix formatting issues..." -Level Info
+                Write-Log -Message "Attempting to fix formatting issues in $($File.Name)..." -Severity Info
 
-                # Fix trailing whitespace
                 $Content = $Content -replace '\s+$', ''
-
-                # Fix tabs to spaces
                 $Content = $Content -replace '\t', '    '
-
-                # Normalize line endings to LF
                 $Content = $Content -replace '\r\n', "`n"
 
                 Set-Content -Path $File.FullName -Value $Content -NoNewline
-                Write-Log "    Fixed formatting issues" -Level Success
+                Write-Log -Message "Fixed formatting issues in $($File.Name)" -Severity Info
             }
         }
     }
@@ -188,53 +158,45 @@ function Invoke-FormattingCheck {
 
 #region Main Execution
 try {
-    Write-Log "🚀 IntuneStack Code Quality Check" -Level Success
-    Write-Log "Path: $Path" -Level Info
+    Write-Log -Message "IntuneStack Code Quality Check starting" -Severity Start
+    Write-Log -Message "Path: $Path" -Severity Info
 
-    # Ensure required modules are installed
     Test-PowerShellModules
 
     $TotalIssues = 0
     $ErrorCount = 0
 
     if ($CheckFormatting) {
-        # Only check formatting
         $FormattingIssues = Invoke-FormattingCheck -Path $Path -Fix:$Fix
+
         $TotalIssues += $FormattingIssues
 
-        Write-Log "`n📊 Formatting Summary:" -Level Info
-        Write-Log "  Formatting Issues: $FormattingIssues" -Level $(if ($FormattingIssues -gt 0) { 'Warning' }else { 'Success' })
+        Write-Log -Message "Formatting Issues: $FormattingIssues" -Severity $(if ($FormattingIssues -gt 0) { 'Warn' } else { 'Info' })
     } else {
-        # Full analysis
+
         $AnalysisResults = Invoke-PSScriptAnalyzerCheck -Path $Path
         $FormattingIssues = Invoke-FormattingCheck -Path $Path -Fix:$Fix
 
         $ErrorCount = ($AnalysisResults | Where-Object Severity -EQ 'Error').Count
         $WarningCount = ($AnalysisResults | Where-Object Severity -EQ 'Warning').Count
         $InfoCount = ($AnalysisResults | Where-Object Severity -EQ 'Information').Count
-
         $TotalIssues = $AnalysisResults.Count + $FormattingIssues
 
-        Write-Log "`n📊 Analysis Summary:" -Level Info
-        Write-Log "  PSScriptAnalyzer Issues: $($AnalysisResults.Count)" -Level Info
-        Write-Log "    Errors: $ErrorCount" -Level $(if ($ErrorCount -gt 0) { 'Error' }else { 'Success' })
-        Write-Log "    Warnings: $WarningCount" -Level $(if ($WarningCount -gt 0) { 'Warning' }else { 'Success' })
-        Write-Log "    Information: $InfoCount" -Level Info
-        Write-Log "  Formatting Issues: $FormattingIssues" -Level $(if ($FormattingIssues -gt 0) { 'Warning' }else { 'Success' })
-        Write-Log "  Total Issues: $TotalIssues" -Level $(if ($TotalIssues -gt 0) { 'Warning' }else { 'Success' })
+        Write-Log -Message "PSScriptAnalyzer Issues: $($AnalysisResults.Count) | Errors: $ErrorCount | Warnings: $WarningCount | Info: $InfoCount" -Severity Info
+        
+        Write-Log -Message "Formatting Issues: $FormattingIssues" -Severity $(if ($FormattingIssues -gt 0) { 'Warn' } else { 'Info' })
+        Write-Log -Message "Total Issues: $TotalIssues" -Severity $(if ($TotalIssues -gt 0) { 'Warn' } else { 'Info' })
     }
 
-    # Exit with appropriate code
     if ($FailOnError -and ($ErrorCount -gt 0 -or $TotalIssues -gt 0)) {
-        Write-Log "`n❌ Code quality check failed!" -Level Error
+        Write-Log -Message "Code quality check failed" -Severity Error
         exit 1
-    } elseif ($TotalIssues -gt 0) {
-        Write-Log "`n⚠️ Code quality check completed with issues" -Level Warning
-    } else {
-        Write-Log "`n✅ Code quality check passed!" -Level Success
     }
+
+    Write-Log -Message "Code quality check complete" -Severity End
+
 } catch {
-    Write-Log "💥 Code quality check failed: $($_.Exception.Message)" -Level Error
+    Write-Log -Message "Code quality check failed: $($_.Exception.Message)" -Severity Error
     exit 1
 }
 #endregion

@@ -1,22 +1,21 @@
-# Pre-commit hooks for code quality
 repos:
   - repo: local
     hooks:
       - id: powershell-script-analyzer
         name: PSScriptAnalyzer
         entry: pwsh
-        args: [-c, "./scripts/Invoke-CodeQuality.ps1 -FailOnError"]
+        args: [ -c, "./src/Invoke-CodeQuality.ps1 -FailOnError" ]
         language: system
         files: \.(ps1|psm1|psd1)$
-        stages: [commit]
+        stages: [ commit ]
 
       - id: powershell-formatting
         name: PowerShell Formatting Check
         entry: pwsh
-        args: [-c, "./scripts/Invoke-CodeQuality.ps1 -CheckFormatting"]
+        args: [ -c, "./src/Invoke-CodeQuality.ps1 -CheckFormatting" ]
         language: system
         files: \.(ps1|psm1|psd1)$
-        stages: [commit]
+        stages: [ commit ]
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.4.0
@@ -27,10 +26,10 @@ repos:
       - id: check-json
       - id: check-merge-conflict
       - id: check-added-large-files
-        args: ['--maxkb=1000']
+        args: [ "--maxkb=1000" ]
 
   - repo: https://github.com/igorshubovych/markdownlint-cli
     rev: v0.37.0
     hooks:
       - id: markdownlint
-        args: ['--config', '.markdownlint.json']
+        args: [ "--config", ".markdownlint.json" ]

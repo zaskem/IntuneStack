@@ -62,18 +62,9 @@ venv/
 secrets.yaml
 local-config.yaml
 
-# OpenIntuneBaselines
-templates/CompliancePolicies/*
-templates/DeviceConfiguration/*
-templates/DriverUpdateProfiles/*
-templates/Scripts/*
-templates/SettingsCatalog/*
-templates/UpdatePolicies/*
-
 
 # PowerShell
 *.ps1xml
-*.psd1
 .vscode/settings.json.user
 
 # Azure
