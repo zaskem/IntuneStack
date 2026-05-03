@@ -6,8 +6,8 @@ name: Policy Promotion
 
 on:
     pull_request:
-        branches: [ main ]
-        types: [ opened, synchronize, reopened ]
+        branches: [main]
+        types: [opened, synchronize, reopened]
 
     workflow_dispatch:
         inputs:
@@ -54,10 +54,10 @@ jobs:
         runs-on: ubuntu-latest
         if: github.event_name == 'pull_request'
         outputs:
-            policy_id: ${{ steps.parse.outputs.policy_id }}
-            current_stage: ${{ steps.parse.outputs.current_stage }}
+            policy_id:            ${{ steps.parse.outputs.policy_id }}
+            current_stage:        ${{ steps.parse.outputs.current_stage }}
             compliance_threshold: ${{ steps.parse.outputs.compliance_threshold }}
-            auto_promote: ${{ steps.parse.outputs.auto_promote }}
+            auto_promote:         ${{ steps.parse.outputs.auto_promote }}
 
         steps:
             - name: Parse PR body
@@ -73,9 +73,9 @@ jobs:
                           return match ? match[1].trim() : '';
                       };
 
-                      const policyId   = extract('Policy ID \\(GUID\\)');
-                      const stage      = extract('Current Stage');
-                      const threshold  = extract('Compliance Threshold \\(%\\)') || '80';
+                      const policyId    = extract('Policy ID \\(GUID\\)');
+                      const stage       = extract('Current Stage');
+                      const threshold   = extract('Compliance Threshold \\(%\\)') || '80';
                       const autoPromote = extract('Auto Promote').toLowerCase() === 'yes';
 
                       if (!policyId) {
@@ -96,17 +96,15 @@ jobs:
     promote:
         name: Promote
         runs-on: ubuntu-latest
-        needs: [ parse-pr ]
+        needs: [parse-pr]
         if: |
             always() &&
             (github.event_name == 'workflow_dispatch' ||
             (github.event_name == 'pull_request' && needs.parse-pr.result == 'success'))
 
         environment:
-            name: ${{ github.event_name == 'workflow_dispatch' && inputs.current_stage ||
-                needs.parse-pr.outputs.current_stage }}
-            url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{
-                github.run_id }}
+            name: ${{ github.event_name == 'workflow_dispatch' && inputs.current_stage || needs.parse-pr.outputs.current_stage }}
+            url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
         steps:
             - uses: actions/checkout@v4
@@ -131,10 +129,10 @@ jobs:
             - name: Run promotion analysis
               shell: pwsh
               env:
-                  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-                  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-                  OIDC_TOKEN: ${{ steps.oidc.outputs.oidc_token }}
-                  INTUNESTACK_DEV_GROUP: ${{ vars.INTUNESTACK_DEV_GROUP }}
+                  AZURE_CLIENT_ID:        ${{ secrets.AZURE_CLIENT_ID }}
+                  AZURE_TENANT_ID:        ${{ secrets.AZURE_TENANT_ID }}
+                  OIDC_TOKEN:             ${{ steps.oidc.outputs.oidc_token }}
+                  INTUNESTACK_DEV_GROUP:  ${{ vars.INTUNESTACK_DEV_GROUP }}
                   INTUNESTACK_TEST_GROUP: ${{ vars.INTUNESTACK_TEST_GROUP }}
                   INTUNESTACK_PROD_GROUP: ${{ vars.INTUNESTACK_PROD_GROUP }}
               run: |
@@ -162,6 +160,15 @@ jobs:
 
                   $result = Start-PolicyPromotionAnalysis @params
                   exit ([int](-not $result))
+
+            - name: Upload promotion report
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: promotion-report
+                  path: Logs/promotion-report.json
+                  retention-days: 7
+                  if-no-files-found: ignore
 
             - name: Summary
               if: always()

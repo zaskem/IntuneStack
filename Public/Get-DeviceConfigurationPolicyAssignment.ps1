@@ -81,6 +81,8 @@ function Get-DeviceConfigurationPolicyAssignment {
                 $GroupId = $Assignment.target.groupId
 
                 if ($GroupId -and -not $AssignedGroups.Contains($GroupId)) {
+                    $GroupDetails = $GroupTable[$GroupId]
+
                     $AssignmentType = switch ($Assignment.target.'@odata.type') {
                         '#microsoft.graph.exclusionGroupAssignmentTarget' { "Exclude" }
                         default { "Include" }
@@ -183,12 +185,12 @@ function Get-DeviceConfigurationPolicyAssignment {
                         $GroupId = $Assignment.target.groupId
 
                         if ($GroupId -and -not $AssignedGroups.Contains($GroupId)) {
+                            $GroupDetails = $GroupTable[$GroupId]
+
                             $AssignmentType = switch ($Assignment.target.'@odata.type') {
                                 '#microsoft.graph.exclusionGroupAssignmentTarget' { "Exclude" }
                                 default { "Include" }
                             }
-
-                            $GroupDetails = $GroupTable[$GroupId]
 
                             $AssignedGroups[$GroupId] = [PSCustomObject]@{
                                 Id             = $GroupId
