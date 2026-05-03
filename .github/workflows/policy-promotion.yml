@@ -6,8 +6,8 @@ name: Policy Promotion
 
 on:
     pull_request:
-        branches: [main]
-        types: [opened, synchronize, reopened]
+        branches: [ main ]
+        types: [ opened, synchronize, reopened ]
 
     workflow_dispatch:
         inputs:
@@ -54,10 +54,10 @@ jobs:
         runs-on: ubuntu-latest
         if: github.event_name == 'pull_request'
         outputs:
-            policy_id:            ${{ steps.parse.outputs.policy_id }}
-            current_stage:        ${{ steps.parse.outputs.current_stage }}
+            policy_id: ${{ steps.parse.outputs.policy_id }}
+            current_stage: ${{ steps.parse.outputs.current_stage }}
             compliance_threshold: ${{ steps.parse.outputs.compliance_threshold }}
-            auto_promote:         ${{ steps.parse.outputs.auto_promote }}
+            auto_promote: ${{ steps.parse.outputs.auto_promote }}
 
         steps:
             - name: Parse PR body
@@ -96,15 +96,17 @@ jobs:
     promote:
         name: Promote
         runs-on: ubuntu-latest
-        needs: [parse-pr]
+        needs: [ parse-pr ]
         if: |
             always() &&
             (github.event_name == 'workflow_dispatch' ||
             (github.event_name == 'pull_request' && needs.parse-pr.result == 'success'))
 
         environment:
-            name: ${{ github.event_name == 'workflow_dispatch' && inputs.current_stage || needs.parse-pr.outputs.current_stage }}
-            url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            name: ${{ github.event_name == 'workflow_dispatch' && inputs.current_stage ||
+                needs.parse-pr.outputs.current_stage }}
+            url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{
+                github.run_id }}
 
         steps:
             - uses: actions/checkout@v4
@@ -129,10 +131,10 @@ jobs:
             - name: Run promotion analysis
               shell: pwsh
               env:
-                  AZURE_CLIENT_ID:        ${{ secrets.AZURE_CLIENT_ID }}
-                  AZURE_TENANT_ID:        ${{ secrets.AZURE_TENANT_ID }}
-                  OIDC_TOKEN:             ${{ steps.oidc.outputs.oidc_token }}
-                  INTUNESTACK_DEV_GROUP:  ${{ vars.INTUNESTACK_DEV_GROUP }}
+                  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+                  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+                  OIDC_TOKEN: ${{ steps.oidc.outputs.oidc_token }}
+                  INTUNESTACK_DEV_GROUP: ${{ vars.INTUNESTACK_DEV_GROUP }}
                   INTUNESTACK_TEST_GROUP: ${{ vars.INTUNESTACK_TEST_GROUP }}
                   INTUNESTACK_PROD_GROUP: ${{ vars.INTUNESTACK_PROD_GROUP }}
               run: |
@@ -172,12 +174,48 @@ jobs:
 
             - name: Summary
               if: always()
-              shell: bash
+              shell: pwsh
               run: |
-                  cat >> $GITHUB_STEP_SUMMARY << 'EOF'
-                  # Policy Promotion
+                  $report = Get-Content "Logs/promotion-report.json" -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
 
-                  | Setting | Value |
-                  |---------|-------|
-                  | Run | [${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
-                  EOF
+                  if (-not $report) {
+                      Add-Content $env:GITHUB_STEP_SUMMARY "## Policy Promotion`n`nNo report generated."
+                      exit 0
+                  }
+
+                  $statusIcon = if ($report.PromotionExecuted) { "✅" } elseif ($report.ReadyForPromotion) { "⚠️" } else { "❌" }
+                  $status     = if ($report.PromotionExecuted) { "Promoted" } elseif ($report.ReadyForPromotion) { "Ready — not promoted" } else { "Not ready" }
+
+                  $summary = @"
+                  ## Policy Promotion — $statusIcon $status
+
+                  | | |
+                  |---|---|
+                  | **Policy** | $($report.PolicyName) |
+                  | **Type** | $($report.PolicyType) |
+                  | **Current Stage** | $($report.CurrentStage) |
+                  | **Next Stage** | $($report.NextStage) |
+                  | **Devices** | $($report.Metrics.TotalDevices) |
+                  | **Success Rate** | $($report.Metrics.SuccessRate)% |
+                  | **Threshold** | $($report.ComplianceThreshold)% |
+                  | **Auto Promote** | $($report.AutoPromoteEnabled) |
+                  | **Promotion Executed** | $($report.PromotionExecuted) |
+                  | **Promoted To** | $(if ($report.PromotionTargetStage) { $report.PromotionTargetStage } else { '—' }) |
+                  | **Promoted Group** | $(if ($report.PromotionTargetGroup) { $report.PromotionTargetGroup } else { '—' }) |
+                  | **Timestamp** | $($report.Timestamp) |
+
+                  ### Assigned Groups
+
+                  | Group | Assignment Type |
+                  |---|---|
+                  "@
+
+                  foreach ($group in $report.AssignedGroups) {
+                      $summary += "`n| $($group.Name) | $($group.AssignmentType) |"
+                  }
+
+                  if ($report.PromotionGuidance) {
+                      $summary += "`n`n> **Note:** $($report.PromotionGuidance)"
+                  }
+
+                  Add-Content $env:GITHUB_STEP_SUMMARY $summary
