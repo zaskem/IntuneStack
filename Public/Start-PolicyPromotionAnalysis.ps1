@@ -40,7 +40,7 @@ function Start-PolicyPromotionAnalysis {
 
         [Parameter(Mandatory = $false)]
         [ValidateSet('dev', 'test', 'prod')]
-        [string]$CurrentStage = $env:GITHUB_REF_NAME,
+        [string]$CurrentStage = 'dev',
 
         [Parameter(Mandatory = $false)]
         [switch]$AutoPromote
